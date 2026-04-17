@@ -1,0 +1,433 @@
+from contextlib import asynccontextmanager
+import json
+from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()  # reads .env into os.environ before anything else imports it
+
+from pathlib import Path
+
+from fastapi import FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+class VapiToolMiddleware:
+    """
+    Vapi sends tool calls wrapped in:
+      {"message": {"type": "tool-calls", "toolCallList": [{"id": "...", "function": {"name": "...", "arguments": "{...}"}}]}}
+    and expects back:
+      {"results": [{"toolCallId": "...", "result": "<json string>"}]}
+
+    This ASGI middleware unwraps the Vapi payload before the endpoint sees it,
+    then re-wraps the response so Vapi can parse the result.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Buffer the full request body
+        body = b""
+        more_body = True
+        while more_body:
+            message = await receive()
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
+
+        vapi_tool_call_id = None
+        if body:
+            try:
+                data = json.loads(body)
+                msg = data.get("message", {})
+                if msg.get("type") == "tool-calls" and "toolCallList" in msg:
+                    tool_call = msg["toolCallList"][0]
+                    vapi_tool_call_id = tool_call["id"]
+                    args_str = tool_call["function"]["arguments"]
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    body = json.dumps(args).encode()
+            except (json.JSONDecodeError, KeyError, IndexError):
+                pass
+
+        body_sent = False
+
+        async def new_receive():
+            nonlocal body_sent
+            if not body_sent:
+                body_sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        if vapi_tool_call_id is None:
+            await self.app(scope, new_receive, send)
+            return
+
+        # Capture the inner response
+        response_body = b""
+
+        async def capture_send(message):
+            nonlocal response_body
+            if message["type"] == "http.response.body":
+                response_body += message.get("body", b"")
+
+        await self.app(scope, new_receive, capture_send)
+
+        vapi_response = json.dumps({
+            "results": [{
+                "toolCallId": vapi_tool_call_id,
+                "result": response_body.decode(),
+            }]
+        }).encode()
+
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                [b"content-type", b"application/json"],
+                [b"content-length", str(len(vapi_response)).encode()],
+            ],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": vapi_response,
+            "more_body": False,
+        })
+
+from database import init_db
+from models import (
+    LookupByPhoneRequest,
+    SaveOrUpdateCustomerRequest,
+    DeliveryEligibilityRequest,
+    CreateCartRequest,
+    AddItemRequest,
+    GetCartSummaryRequest,
+    UpdateCartItemRequest,
+    RemoveCartItemRequest,
+    ClearCartRequest,
+    CancelCartRequest,
+    ConfirmOrderRequest,
+)
+from crud import (
+    get_customer_by_phone,
+    get_customer_order_history,
+    upsert_customer,
+    create_cart,
+    add_item_to_cart,
+    get_cart_summary,
+    update_cart_item,
+    remove_cart_item,
+    clear_cart,
+    cancel_cart,
+    confirm_order,
+    get_orders,
+    CartNotFoundError,
+    CartNotActiveError,
+    CartItemNotFoundError,
+)
+from geocoding import check_eligibility
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Restaurant Voice Agent API", lifespan=lifespan)
+app.add_middleware(VapiToolMiddleware)  # type: ignore[arg-type]
+
+
+@app.get("/")
+def health():
+    """Health check — use this to confirm the server is reachable from Vapi/ngrok."""
+    return {"status": "ok", "service": "restaurant-voice-agent-api"}
+
+
+@app.get("/dashboard", response_class=FileResponse)
+def dashboard():
+    """Staff order dashboard — auto-refreshes every 30 seconds."""
+    return FileResponse(Path(__file__).parent / "dashboard.html")
+
+
+@app.post("/lookup-customer-by-phone")
+def lookup_customer_by_phone(body: LookupByPhoneRequest):
+    customer = get_customer_by_phone(body.phone_number)
+
+    # Not found is a normal conversation branch, NOT an error — never return 404
+    if customer is None:
+        return {
+            "found": False,
+            "phone_number": body.phone_number,
+            "next_action": (
+                "NEW CUSTOMER — no record found. This is normal. "
+                "Step 1: Ask the caller their first and last name. "
+                "Step 2: As soon as you have both names, call save_or_update_customer "
+                f"with phone_number='{body.phone_number}', first_name=<first>, last_name=<last>. "
+                "Step 3: After save_or_update_customer succeeds, call create_order_cart. "
+                "Do NOT say you are having trouble at any point. Do NOT transfer."
+            ),
+        }
+
+    history = get_customer_order_history(customer["phone_number"])
+
+    # Build a natural greeting hint for the agent
+    greeting_hint = (
+        f"Returning customer: {customer['first_name']} {customer['last_name']}. "
+        f"They have placed {history['total_orders']} order(s) with us. "
+    )
+    if history["past_orders"]:
+        last = history["past_orders"][0]
+        item_names = ", ".join(
+            f"{i['quantity']}x {i['name']}" for i in last["items"]
+        )
+        greeting_hint += (
+            f"Their last order ({last['date']}) was: {item_names} "
+            f"({last['order_type']}, ${last['food_subtotal']}). "
+        )
+    if history["favorite_item"]:
+        greeting_hint += f"Their favourite item is {history['favorite_item']}. "
+    if history["usual_order_type"]:
+        greeting_hint += f"They usually order {history['usual_order_type']}. "
+    greeting_hint += (
+        "Greet them warmly by first name. "
+        "If they have past orders, offer to repeat their last order naturally. "
+        "Do not read all this data out loud — use it to sound like you know them."
+    )
+
+    return {
+        "found":            True,
+        "phone_number":     customer["phone_number"],
+        "first_name":       customer["first_name"],
+        "last_name":        customer["last_name"],
+        "default_address":  customer["default_address"],
+        "notes":            customer["notes"],
+        "order_history":    history,
+        "next_action":      greeting_hint,
+    }
+
+
+@app.post("/save-or-update-customer")
+def save_or_update_customer(body: SaveOrUpdateCustomerRequest):
+    # body.address (public API name) maps to default_address (DB column name)
+    result = upsert_customer(
+        phone_number=body.phone_number,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        default_address=body.address,
+        notes=body.notes,
+    )
+    result["next_action"] = (
+        "Customer saved successfully. Do NOT say you are having trouble. "
+        "Do NOT transfer. Immediately call create_order_cart with the caller's "
+        "phone_number, customer_name (first + last name), and order_type."
+    )
+    return result
+
+
+@app.post("/check-delivery-eligibility")
+def check_delivery_eligibility(body: DeliveryEligibilityRequest):
+    """
+    Check whether an address is within the delivery radius.
+    Always returns 200 — eligible:true/false is the branch, not an error.
+    """
+    try:
+        return check_eligibility(body.address)
+    except ValueError as e:
+        # Address could not be geocoded — tell the agent so it can ask again
+        return JSONResponse(
+            status_code=422,
+            content={"detail": str(e)},
+        )
+    except RuntimeError as e:
+        # Upstream API failure — don't crash the call
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Eligibility check unavailable: {e}"},
+        )
+
+
+@app.post("/create-order-cart")
+def create_order_cart(body: CreateCartRequest):
+    """
+    Start a fresh cart for the current call.
+    Must be called before any items can be added.
+    """
+    cart = create_cart(
+        phone_number     = body.phone_number,
+        order_type       = body.order_type,
+        customer_name    = body.customer_name,
+        delivery_address = body.delivery_address,
+    )
+    return cart
+
+
+@app.post("/add-item-to-cart")
+def add_item(body: AddItemRequest):
+    """
+    Add one item to an existing active cart.
+    line_total is computed server-side (quantity × unit_price).
+    Returns the saved item plus the running cart subtotal.
+    """
+    try:
+        item = add_item_to_cart(
+            cart_id    = body.cart_id,
+            item_name  = body.item_name,
+            quantity   = body.quantity,
+            unit_price = body.unit_price,
+            size       = body.size,
+            modifiers  = body.modifiers,
+            notes      = body.notes,
+        )
+        return item
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+
+
+@app.post("/get-cart-summary")
+def cart_summary(body: GetCartSummaryRequest):
+    """
+    Return all items, subtotal, item count, and delivery-minimum status.
+    This is the source of truth the agent must use before confirming any order.
+    """
+    try:
+        return get_cart_summary(body.cart_id)
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+
+
+@app.post("/update-cart-item")
+def update_cart_item_route(body: UpdateCartItemRequest):
+    """
+    Update quantity, size, modifiers, or notes on an existing cart item.
+    Only fields included in the request body are changed.
+    line_total is recalculated server-side. Returns the updated item + food_subtotal.
+    """
+    try:
+        return update_cart_item(
+            cart_id      = body.cart_id,
+            cart_item_id = body.cart_item_id,
+            quantity     = body.quantity,
+            size         = body.size,
+            modifiers    = body.modifiers,
+            notes        = body.notes,
+        )
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+    except CartItemNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+
+
+@app.post("/remove-cart-item")
+def remove_cart_item_route(body: RemoveCartItemRequest):
+    """
+    Permanently delete one item from an active cart.
+    Returns the removed item name and the updated food_subtotal.
+    """
+    try:
+        return remove_cart_item(
+            cart_id      = body.cart_id,
+            cart_item_id = body.cart_item_id,
+        )
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+    except CartItemNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+
+
+@app.post("/clear-cart")
+def clear_cart_route(body: ClearCartRequest):
+    """
+    Remove all items from an active cart but keep the cart itself.
+    Use when the caller says 'start over' or 'forget all that'.
+    The cart stays active and ready to accept new items.
+    """
+    try:
+        return clear_cart(body.cart_id)
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+
+
+@app.post("/cancel-cart")
+def cancel_cart_route(body: CancelCartRequest):
+    """
+    Mark a cart as cancelled. Preserves the row for reporting.
+    Use when the caller abandons the order, the call drops, or a transfer fails.
+    Cancelled carts cannot be modified further.
+    """
+    try:
+        return cancel_cart(body.cart_id)
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+
+
+@app.post("/confirm-order")
+def confirm_order_route(body: ConfirmOrderRequest):
+    """
+    Final gate — validate the staged cart, push to Clover, lock as confirmed.
+    Only call this after the caller has said yes to the order summary.
+
+    Validates:
+      - Cart exists and is active
+      - Cart has at least one item
+      - Delivery minimum is met (delivery orders only)
+
+    On success: cart status → confirmed, Clover order ID stored.
+    On Clover failure: cart stays active so the call can retry or transfer.
+    """
+    try:
+        return confirm_order(body.cart_id)
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"detail": str(e)})
+    except RuntimeError as e:
+        # Clover API failure — cart intentionally stays active for retry
+        return JSONResponse(status_code=503, content={"detail": str(e)})
+
+
+@app.get("/orders")
+def list_orders(
+    status: Optional[str] = Query(
+        default=None,
+        description="Filter by cart status: active, confirmed, or cancelled",
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+        description="Maximum number of orders to return",
+    ),
+):
+    """
+    Staff dashboard — list recent orders with compact item summaries.
+    Use ?status=confirmed to see today's confirmed orders, ?status=active
+    to see in-progress carts, or omit for all.
+    Sorted most-recent first (confirmed_at, falling back to created_at).
+    """
+    if status and status not in ("active", "confirmed", "cancelled"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "status must be 'active', 'confirmed', or 'cancelled'"},
+        )
+    return get_orders(status=status, limit=limit)
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = [
+        {"field": ".".join(str(loc) for loc in e["loc"]), "message": e["msg"]}
+        for e in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})

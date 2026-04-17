@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rotelli Pizza &amp; Pasta — Orders Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #c0392b;
+      color: #fff;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    }
+    header h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: .3px; }
+    header h1 span { font-weight: 400; opacity: .85; font-size: 1rem; }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: .82rem;
+      opacity: .9;
+    }
+    #last-updated { white-space: nowrap; }
+    #countdown {
+      background: rgba(255,255,255,.2);
+      border-radius: 12px;
+      padding: 3px 10px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    /* ── Filter bar ── */
+    .filter-bar {
+      padding: 16px 32px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .filter-bar span { font-size: .85rem; color: #555; margin-right: 4px; }
+    .filter-btn {
+      padding: 6px 18px;
+      border-radius: 20px;
+      border: 1.5px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      font-size: .85rem;
+      font-weight: 500;
+      color: #444;
+      transition: all .15s;
+    }
+    .filter-btn:hover { border-color: #c0392b; color: #c0392b; }
+    .filter-btn.active { background: #c0392b; color: #fff; border-color: #c0392b; }
+
+    /* ── Stats strip ── */
+    .stats {
+      display: flex;
+      gap: 16px;
+      padding: 0 32px 16px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 14px 22px;
+      min-width: 140px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      text-align: center;
+    }
+    .stat-card .val {
+      font-size: 1.8rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .stat-card .lbl {
+      font-size: .75rem;
+      color: #888;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .stat-card.active .val  { color: #e67e22; }
+    .stat-card.confirmed .val { color: #27ae60; }
+    .stat-card.cancelled .val { color: #95a5a6; }
+    .stat-card.revenue .val  { color: #2980b9; }
+
+    /* ── Table wrapper ── */
+    .table-wrap {
+      padding: 0 32px 40px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 6px rgba(0,0,0,.08);
+      font-size: .875rem;
+    }
+    thead tr { background: #2c2c2c; color: #fff; }
+    thead th {
+      padding: 12px 14px;
+      text-align: left;
+      font-weight: 600;
+      font-size: .78rem;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      white-space: nowrap;
+    }
+    tbody tr { border-bottom: 1px solid #f0f0f0; transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #fafafa; }
+    td { padding: 12px 14px; vertical-align: top; }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: .75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+    .badge.active    { background: #fef3e2; color: #e67e22; }
+    .badge.confirmed { background: #eafaf1; color: #27ae60; }
+    .badge.cancelled { background: #f2f3f4; color: #95a5a6; }
+
+    .type-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-size: .72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+    }
+    .type-badge.pickup   { background: #eaf4ff; color: #2980b9; }
+    .type-badge.delivery { background: #fdf2ff; color: #8e44ad; }
+
+    /* ── Items list inside cell ── */
+    .items-list { list-style: none; }
+    .items-list li {
+      padding: 1px 0;
+      color: #333;
+      font-size: .83rem;
+    }
+    .items-list li .qty { color: #888; font-size: .78rem; margin-right: 4px; }
+    .items-list li .mod { color: #aaa; font-style: italic; font-size: .76rem; }
+
+    /* ── Total ── */
+    .total { font-weight: 700; color: #1a1a1a; }
+    .fee-note { font-size: .75rem; color: #999; }
+
+    /* ── Empty / Error states ── */
+    .empty-row td {
+      text-align: center;
+      padding: 48px;
+      color: #aaa;
+      font-size: .95rem;
+    }
+
+    .error-banner {
+      margin: 0 32px 16px;
+      padding: 12px 18px;
+      background: #fdf0f0;
+      border: 1px solid #f5c6cb;
+      border-radius: 8px;
+      color: #c0392b;
+      font-size: .85rem;
+      display: none;
+    }
+
+    /* ── Time formatting ── */
+    .time-cell { white-space: nowrap; font-size: .82rem; color: #555; }
+    .time-cell .date { color: #aaa; font-size: .75rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Rotelli Pizza &amp; Pasta &nbsp;<span>/ Orders Dashboard</span></h1>
+  <div id="status-bar">
+    <span id="last-updated">Loading…</span>
+    <span id="countdown">30s</span>
+  </div>
+</header>
+
+<div class="filter-bar">
+  <span>Show:</span>
+  <button class="filter-btn active" data-status="">All</button>
+  <button class="filter-btn" data-status="active">Active</button>
+  <button class="filter-btn" data-status="confirmed">Confirmed</button>
+  <button class="filter-btn" data-status="cancelled">Cancelled</button>
+</div>
+
+<div class="stats">
+  <div class="stat-card active">
+    <div class="val" id="cnt-active">—</div>
+    <div class="lbl">Active</div>
+  </div>
+  <div class="stat-card confirmed">
+    <div class="val" id="cnt-confirmed">—</div>
+    <div class="lbl">Confirmed</div>
+  </div>
+  <div class="stat-card cancelled">
+    <div class="val" id="cnt-cancelled">—</div>
+    <div class="lbl">Cancelled</div>
+  </div>
+  <div class="stat-card revenue">
+    <div class="val" id="cnt-revenue">—</div>
+    <div class="lbl">Revenue</div>
+  </div>
+</div>
+
+<div class="error-banner" id="error-banner"></div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Status</th>
+        <th>Type</th>
+        <th>Customer</th>
+        <th>Phone</th>
+        <th>Items</th>
+        <th>Total</th>
+        <th>Clover ID</th>
+        <th>Time</th>
+      </tr>
+    </thead>
+    <tbody id="orders-body">
+      <tr class="empty-row"><td colspan="9">Loading orders…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const REFRESH_INTERVAL = 30; // seconds
+
+  let currentFilter = '';
+  let countdown = REFRESH_INTERVAL;
+  let allOrders  = [];
+
+  // ── Fetch orders ──────────────────────────────────────────────────────────
+  async function fetchOrders() {
+    try {
+      const url = currentFilter
+        ? `/orders?status=${currentFilter}&limit=200`
+        : `/orders?limit=200`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      allOrders = await res.json();
+      hideError();
+      renderTable(allOrders);
+      renderStats();
+      document.getElementById('last-updated').textContent =
+        'Updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      showError('Could not load orders: ' + e.message);
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  function renderTable(orders) {
+    const tbody = document.getElementById('orders-body');
+    if (!orders.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No orders found.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = orders.map(o => {
+      const itemsHtml = o.items.length
+        ? `<ul class="items-list">${o.items.map(i => {
+            const mods = i.modifiers && i.modifiers.length
+              ? `<span class="mod">(${i.modifiers.join(', ')})</span>` : '';
+            const size = i.size ? `<span class="mod">[${i.size}]</span> ` : '';
+            return `<li><span class="qty">${i.quantity}×</span>${size}${i.item_name} ${mods}</li>`;
+          }).join('')}</ul>`
+        : '<span style="color:#ccc">—</span>';
+
+      const feeNote = o.order_type === 'delivery'
+        ? `<div class="fee-note">+$${o.delivery_fee.toFixed(2)} delivery</div>` : '';
+
+      const timeStr = formatTime(o.confirmed_at || o.created_at);
+
+      return `
+        <tr>
+          <td><strong>#${o.cart_id}</strong></td>
+          <td><span class="badge ${o.status}">${o.status}</span></td>
+          <td><span class="type-badge ${o.order_type}">${o.order_type}</span></td>
+          <td>${esc(o.customer_name || '—')}</td>
+          <td>${esc(formatPhone(o.phone_number))}</td>
+          <td>${itemsHtml}</td>
+          <td>
+            <div class="total">$${o.final_total.toFixed(2)}</div>
+            ${feeNote}
+          </td>
+          <td style="font-size:.8rem;color:#777">${esc(o.clover_order_id || '—')}</td>
+          <td class="time-cell">${timeStr}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  function renderStats() {
+    // Always compute stats over ALL orders regardless of filter
+    fetch('/orders?limit=200')
+      .then(r => r.json())
+      .then(all => {
+        const active    = all.filter(o => o.status === 'active').length;
+        const confirmed = all.filter(o => o.status === 'confirmed').length;
+        const cancelled = all.filter(o => o.status === 'cancelled').length;
+        const revenue   = all
+          .filter(o => o.status === 'confirmed')
+          .reduce((s, o) => s + o.final_total, 0);
+
+        document.getElementById('cnt-active').textContent    = active;
+        document.getElementById('cnt-confirmed').textContent = confirmed;
+        document.getElementById('cnt-cancelled').textContent = cancelled;
+        document.getElementById('cnt-revenue').textContent   = '$' + revenue.toFixed(2);
+      })
+      .catch(() => {});
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatPhone(p) {
+    if (!p) return '—';
+    const d = p.replace(/\D/g,'');
+    return d.length === 10
+      ? `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
+      : p;
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const time = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const date = d.toLocaleDateString([], {month:'short', day:'numeric'});
+    return `<div>${time}</div><div class="date">${date}</div>`;
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('error-banner');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+  function hideError() {
+    document.getElementById('error-banner').style.display = 'none';
+  }
+
+  // ── Filter buttons ────────────────────────────────────────────────────────
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFilter = btn.dataset.status;
+      countdown = REFRESH_INTERVAL;
+      fetchOrders();
+    });
+  });
+
+  // ── Countdown + auto-refresh ──────────────────────────────────────────────
+  setInterval(() => {
+    countdown--;
+    document.getElementById('countdown').textContent = `${countdown}s`;
+    if (countdown <= 0) {
+      countdown = REFRESH_INTERVAL;
+      fetchOrders();
+    }
+  }, 1000);
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  fetchOrders();
+</script>
+</body>
+</html>
