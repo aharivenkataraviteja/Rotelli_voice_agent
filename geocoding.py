@@ -34,10 +34,22 @@ import requests
 
 GOOGLE_MAPS_API_KEY   = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 RESTAURANT_ADDRESS    = os.environ.get("RESTAURANT_ADDRESS",
-                                       "Rotelli Pizza & Pasta, Boca Raton, FL 33434")
+                                       "Rotelli Pizza & Pasta, Delray Beach, FL 33446")
 RESTAURANT_LAT        = float(os.environ.get("RESTAURANT_LAT", "26.3887"))
 RESTAURANT_LNG        = float(os.environ.get("RESTAURANT_LNG", "-80.1450"))
 DELIVERY_RADIUS_MILES = float(os.environ.get("DELIVERY_RADIUS_MILES", "6.0"))
+
+# South Florida Nominatim viewbox — covers Boca Raton / Delray Beach / Boynton area
+# Format: west,north,east,south
+_NOMINATIM_VIEWBOX = "-80.35,26.75,-79.95,26.20"
+
+# Keywords that indicate the address already has Florida/local context
+_FL_MARKERS = (
+    "fl", "florida", "delray", "boca raton", "boca", "boynton",
+    "lake worth", "lantana", "hypoluxo", "highland beach",
+    "deerfield beach", "deerfield", "pompano", "coral springs",
+    "coconut creek", "margate", "parkland", "lighthouse point",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -114,29 +126,52 @@ def _google_mode(address: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Mode B — OpenStreetMap Nominatim + Haversine (no API key required)
+# Mode B — OpenStreetMap Nominatim + OSRM (no API key required)
 # ---------------------------------------------------------------------------
+
+def _inject_local_context(address: str) -> str:
+    """
+    When a customer says "123 Main Street" with no city, Nominatim can't guess
+    which city they mean.  If the address has no Florida / local area signal,
+    append the restaurant's city so geocoding succeeds.
+    """
+    lower = address.lower()
+    if any(m in lower for m in _FL_MARKERS):
+        return address          # already has local context
+    return f"{address}, Delray Beach, FL"
+
 
 def _nominatim_mode(address: str) -> dict:
     """
     Free mode — real driving routes via OSRM (no API key required).
 
     Step 1: Geocode the customer address with Nominatim (OpenStreetMap).
-            Three-pass progressive simplification if the full address fails.
+            Four-pass progressive strategy if the address fails:
+              Pass 1 — add local context (city/state) if missing, query as-is
+              Pass 2 — original address as supplied by the caller
+              Pass 3 — drop leading house number from the context-augmented form
+              Pass 4 — city + state only (last two comma-parts)
     Step 2: Get real driving distance + duration from OSRM routing engine.
             Falls back to Haversine × 1.3 only if OSRM is unreachable.
     """
-    result = _nominatim_geocode(address)
+    enriched = _inject_local_context(address)
 
-    if result is None:
-        # Pass 2: drop leading house number
-        simplified = re.sub(r"^\d+\s+", "", address)
-        if simplified != address:
-            result = _nominatim_geocode(simplified)
+    # Pass 1 — enriched address (local context injected if needed)
+    result = _nominatim_geocode(enriched)
 
+    # Pass 2 — original address as spoken (in case it already had good context)
+    if result is None and enriched != address:
+        result = _nominatim_geocode(address)
+
+    # Pass 3 — drop leading house number from enriched form
     if result is None:
-        # Pass 3: keep only the last two comma-separated parts (city, state/zip)
-        parts = [p.strip() for p in address.split(",")]
+        no_num = re.sub(r"^\d+\s+", "", enriched)
+        if no_num != enriched:
+            result = _nominatim_geocode(no_num)
+
+    # Pass 4 — city + state/zip only (last two comma-parts of enriched form)
+    if result is None:
+        parts = [p.strip() for p in enriched.split(",")]
         if len(parts) >= 2:
             city_state = ", ".join(parts[-2:])
             result = _nominatim_geocode(city_state)
@@ -162,9 +197,13 @@ def _nominatim_mode(address: str) -> dict:
 
     eligible = distance_miles <= DELIVERY_RADIUS_MILES
 
+    # Use the enriched address as normalized_address so the agent can confirm
+    # the full address back to the caller (including city/state)
+    normalized = enriched if enriched != address else address
+
     return {
         "eligible":             eligible,
-        "normalized_address":   address,
+        "normalized_address":   normalized,
         "distance_miles":       distance_miles,
         "estimated_drive_time": drive_time,
         "reason":               None if eligible else "outside_delivery_area",
@@ -210,9 +249,22 @@ def _nominatim_geocode(query: str):
     """
     Returns (lat, lng) tuple if found, or None if no results.
     Raises RuntimeError on network / HTTP failures.
+
+    Uses countrycodes=us (US only) and a South Florida viewbox to bias results
+    toward the Boca Raton / Delray Beach area without hard-restricting to it.
+    bounded=0 means Nominatim prefers the viewbox area but will still return
+    a result outside it if nothing is found inside.
     """
     encoded = urllib.parse.quote(query)
-    url     = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&limit=1"
+    url = (
+        f"https://nominatim.openstreetmap.org/search"
+        f"?q={encoded}"
+        f"&format=json"
+        f"&limit=1"
+        f"&countrycodes=us"
+        f"&viewbox={_NOMINATIM_VIEWBOX}"
+        f"&bounded=0"
+    )
     headers = {"User-Agent": "restaurant-voice-agent/1.0 (delivery-eligibility-check)"}
 
     try:

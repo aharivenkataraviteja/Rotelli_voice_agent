@@ -235,10 +235,18 @@ def check_delivery_eligibility(body: DeliveryEligibilityRequest):
     try:
         return check_eligibility(body.address)
     except ValueError as e:
-        # Address could not be geocoded — tell the agent so it can ask again
+        # Address could not be geocoded — guide the agent to ask for more detail
         return JSONResponse(
             status_code=422,
-            content={"detail": str(e)},
+            content={
+                "detail": str(e),
+                "next_action": (
+                    "ADDRESS NOT FOUND — the geocoder could not locate that address. "
+                    "Say: 'I wasn't able to find that address — can you give me the full address including the street number and city?' "
+                    "Wait for the caller to repeat it, then call check_delivery_eligibility again with the corrected address. "
+                    "Do NOT transfer unless it fails twice in a row."
+                ),
+            },
         )
     except RuntimeError as e:
         # Upstream API failure — don't crash the call
