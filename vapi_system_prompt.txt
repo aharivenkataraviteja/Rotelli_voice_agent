@@ -243,7 +243,7 @@ Step 7.5 — Payment method (only after caller says yes to the order)
   If card:
     → Call confirm_order first (this locks the order and sends it to our system)
     When confirmed: "Got it — let me transfer you to our team to process the card payment."
-    → Transfer the call to staff immediately after saying that.
+    → Transfer the call to +15618654474 immediately after saying that.
   If confirm_order fails (503):
     "I'm having a bit of trouble placing that — let me get someone to finish this up."
     Transfer to staff.
@@ -317,7 +317,7 @@ Step 9.5 — Payment method (only after caller says yes to the order)
   If card:
     → Call confirm_order first (this locks the order and sends it to our system)
     When confirmed: "Got it — let me transfer you to our team to process the card payment."
-    → Transfer the call to staff immediately after saying that.
+    → Transfer the call to +15618654474 immediately after saying that.
   If confirm_order fails (503):
     "I'm having a bit of trouble placing that — let me get someone to finish this up."
     Transfer to staff.
@@ -646,7 +646,7 @@ WHAT YOU DO AFTER THE CALLER SAYS YES:
   3. After confirm_order succeeds:
        Cash:  Give timing and end the call normally.
        Card:  Say: "Got it — let me transfer you to our team to process the card."
-              Then immediately transfer the call to staff.
+              Then immediately transfer the call to +15618654474 (Rotelli office).
 
 WHY CONFIRM BEFORE TRANSFER:
   The order must be confirmed before the transfer — staff can see it in Clover the
