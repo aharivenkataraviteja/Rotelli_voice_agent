@@ -189,3 +189,19 @@ class CancelCartRequest(BaseModel):
 
 class ConfirmOrderRequest(BaseModel):
     cart_id: int
+
+
+# ---------------------------------------------------------------------------
+# /set-order-time
+# ---------------------------------------------------------------------------
+
+class SetOrderTimeRequest(BaseModel):
+    cart_id:     int
+    spoken_time: str   # e.g. "next Friday at 6 PM", "tomorrow at noon", "tonight at 7:30"
+
+    @field_validator("spoken_time")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("spoken_time cannot be blank")
+        return v.strip()

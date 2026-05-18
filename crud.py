@@ -1,8 +1,18 @@
 import json
 import os
+from datetime import datetime, timedelta
 from typing import List, Optional
 
+import pytz
+
 from database import get_conn
+
+# Timezone for all scheduled-order calculations
+_TZ = pytz.timezone("America/New_York")
+
+# How many minutes before the scheduled time to fire the order to Clover
+PICKUP_PREP_BUFFER_MIN   = 30
+DELIVERY_PREP_BUFFER_MIN = 60
 
 # Business rules — configurable via .env
 DELIVERY_MINIMUM = float(os.environ.get("DELIVERY_MINIMUM", "20.00"))
@@ -303,24 +313,28 @@ def get_cart_summary(cart_id: int) -> dict:
     final_total   = round(taxable_amt + delivery_fee + tax, 2)
 
     summary = {
-        "cart_id":          cart_id,
-        "phone_number":     cart["phone_number"],
-        "order_type":       cart["order_type"],
-        "customer_name":    cart["customer_name"],
-        "delivery_address": cart["delivery_address"],
-        "status":           cart["status"],
-        "clover_order_id":  cart["clover_order_id"],
-        "confirmed_at":     cart["confirmed_at"],
-        "item_count":       len(items),
-        "items":            items,
+        "cart_id":            cart_id,
+        "phone_number":       cart["phone_number"],
+        "order_type":         cart["order_type"],
+        "customer_name":      cart["customer_name"],
+        "delivery_address":   cart["delivery_address"],
+        "status":             cart["status"],
+        "clover_order_id":    cart["clover_order_id"],
+        "confirmed_at":       cart["confirmed_at"],
+        # Scheduled order fields
+        "scheduled_for":      cart["scheduled_for"],
+        "scheduled_status":   cart["scheduled_status"],
+        "scheduled_timezone": cart["scheduled_timezone"],
+        "item_count":         len(items),
+        "items":              items,
         # ── Totals ────────────────────────────────────────────────────────────
-        "food_subtotal":    food_subtotal,
-        "discount":         discount,
-        "taxable_amount":   taxable_amt,
-        "tax":              tax,
-        "tax_rate":         "6.5%",
-        "delivery_fee":     delivery_fee,
-        "final_total":      final_total,
+        "food_subtotal":      food_subtotal,
+        "discount":           discount,
+        "taxable_amount":     taxable_amt,
+        "tax":                tax,
+        "tax_rate":           "6.5%",
+        "delivery_fee":       delivery_fee,
+        "final_total":        final_total,
     }
 
     # meets_delivery_minimum is based on food cost alone, NOT final_total.
@@ -579,6 +593,84 @@ def get_orders(
 
 
 # ---------------------------------------------------------------------------
+# Scheduled order support
+# ---------------------------------------------------------------------------
+
+def set_order_time(cart_id: int, scheduled_for: str) -> dict:
+    """
+    Store a resolved ISO-8601 scheduled_for datetime on an active cart.
+    Marks scheduled_status = 'pending' so confirm_order knows not to fire
+    the order to Clover immediately.
+
+    scheduled_for must be a valid ISO-8601 string (America/New_York aware).
+    Raises CartNotFoundError or CartNotActiveError on bad cart state.
+    """
+    with get_conn() as conn:
+        cart = conn.execute(
+            "SELECT cart_id, status FROM carts WHERE cart_id = ?", (cart_id,)
+        ).fetchone()
+        if cart is None:
+            raise CartNotFoundError(f"Cart {cart_id} not found")
+        if cart["status"] != "active":
+            raise CartNotActiveError(cart["status"])
+
+        conn.execute(
+            """
+            UPDATE carts
+               SET scheduled_for    = ?,
+                   scheduled_status = 'pending',
+                   updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE cart_id = ?
+            """,
+            (scheduled_for, cart_id),
+        )
+
+    return {
+        "status":           "scheduled",
+        "cart_id":          cart_id,
+        "scheduled_for":    scheduled_for,
+        "scheduled_status": "pending",
+    }
+
+
+def _is_future_scheduled(summary: dict) -> bool:
+    """
+    Return True if the cart has a future scheduled time that has NOT yet
+    entered its prep window.  Immediate orders (or ones whose prep window
+    has already arrived) return False so confirm_order fires them now.
+    """
+    scheduled_for = summary.get("scheduled_for")
+    if not scheduled_for or summary.get("scheduled_status") == "not_scheduled":
+        return False
+
+    try:
+        scheduled_dt = datetime.fromisoformat(scheduled_for)
+        if scheduled_dt.tzinfo is None:
+            scheduled_dt = _TZ.localize(scheduled_dt)
+
+        buffer = (
+            PICKUP_PREP_BUFFER_MIN
+            if summary["order_type"] == "pickup"
+            else DELIVERY_PREP_BUFFER_MIN
+        )
+        release_time = scheduled_dt - timedelta(minutes=buffer)
+        return datetime.now(_TZ) < release_time
+    except (ValueError, TypeError):
+        return False   # unparseable — treat as immediate
+
+
+def _fmt_scheduled(iso: str) -> str:
+    """Return a human-readable string like 'Friday, May 8 at 6:00 PM'."""
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = _TZ.localize(dt)
+        return dt.strftime("%A, %B %-d at %-I:%M %p")
+    except Exception:
+        return iso
+
+
+# ---------------------------------------------------------------------------
 # Order confirmation + Clover push
 # ---------------------------------------------------------------------------
 
@@ -615,18 +707,52 @@ def confirm_order(cart_id: int) -> dict:
             f"Current food subtotal: ${summary['food_subtotal']:.2f}"
         )
 
-    # Push to Clover (returns None if not configured)
+    # ── SCHEDULED ORDER — prep window has not arrived yet ─────────────────────
+    if _is_future_scheduled(summary):
+        human = _fmt_scheduled(summary["scheduled_for"])
+
+        with get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE carts
+                   SET status           = 'confirmed',
+                       scheduled_status = 'pending',
+                       confirmed_at     = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                       updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE cart_id = ?
+                """,
+                (cart_id,),
+            )
+
+        return {
+            "status":          "confirmed",
+            "scheduled":       True,
+            "cart_id":         cart_id,
+            "scheduled_for":   summary["scheduled_for"],
+            "human_readable":  human,
+            "clover_order_id": None,
+            "clover_enabled":  is_configured(),
+            "customer_name":   summary["customer_name"],
+            "order_type":      summary["order_type"],
+            "food_subtotal":   summary["food_subtotal"],
+            "delivery_fee":    summary["delivery_fee"],
+            "final_total":     summary["final_total"],
+            "message":         f"Scheduled for {human}. Order will be sent to the kitchen at prep time.",
+        }
+
+    # ── IMMEDIATE ORDER (or scheduled order whose prep window just opened) ────
+    # Push to Clover now
     clover_order_id = create_clover_order(summary)
 
-    # Lock the cart — only after Clover succeeds (or is skipped)
     with get_conn() as conn:
         conn.execute(
             """
             UPDATE carts
-               SET status          = 'confirmed',
-                   clover_order_id = ?,
-                   confirmed_at    = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                   updated_at      = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+               SET status           = 'confirmed',
+                   scheduled_status = 'released',
+                   clover_order_id  = ?,
+                   confirmed_at     = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE cart_id = ?
             """,
             (clover_order_id, cart_id),
@@ -634,6 +760,7 @@ def confirm_order(cart_id: int) -> dict:
 
     return {
         "status":          "confirmed",
+        "scheduled":       False,
         "cart_id":         cart_id,
         "clover_order_id": clover_order_id,
         "clover_enabled":  is_configured(),

@@ -1,6 +1,11 @@
 from contextlib import asynccontextmanager
+import asyncio
 import json
+import logging
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 from dotenv import load_dotenv
 load_dotenv()  # reads .env into os.environ before anything else imports it
@@ -108,6 +113,7 @@ from models import (
     ClearCartRequest,
     CancelCartRequest,
     ConfirmOrderRequest,
+    SetOrderTimeRequest,
 )
 from crud import (
     get_customer_by_phone,
@@ -121,18 +127,29 @@ from crud import (
     clear_cart,
     cancel_cart,
     confirm_order,
+    set_order_time,
     get_orders,
     CartNotFoundError,
     CartNotActiveError,
     CartItemNotFoundError,
 )
 from geocoding import check_eligibility
+from scheduler import scheduler_loop
+
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Start background task — releases scheduled orders when prep window arrives
+    task = asyncio.create_task(scheduler_loop())
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="Restaurant Voice Agent API", lifespan=lifespan)
@@ -376,6 +393,121 @@ def cancel_cart_route(body: CancelCartRequest):
         return cancel_cart(body.cart_id)
     except CartNotFoundError as e:
         return JSONResponse(status_code=404, content={"detail": str(e)})
+
+
+def _parse_spoken_time(spoken: str) -> "Optional[datetime]":
+    """
+    Convert a caller's spoken time phrase to a timezone-aware datetime.
+    Handles common speech patterns that plain dateparser misses.
+    """
+    import dateparser
+    import re
+
+    TZ  = pytz.timezone("America/New_York")
+    now = datetime.now(TZ)
+    settings = {
+        "PREFER_DATES_FROM":        "future",
+        "TIMEZONE":                 "America/New_York",
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "RELATIVE_BASE":            now,
+    }
+
+    # ── Normalise the phrase before handing to dateparser ──────────────────
+    s = spoken.strip().lower()
+
+    # If "tonight" is present and there's a bare time (no am/pm), force PM
+    if re.search(r"\btonight\b", s) and not re.search(r"\b(am|pm|a\.m|p\.m)\b", s):
+        s = re.sub(r"(\d{1,2}(?::\d{2})?)", r"\1 PM", s, count=1)
+
+    # Vague time-of-day words → explicit hour
+    s = re.sub(r"\btonight\b",    "today",   s)
+    s = re.sub(r"\bthis evening\b","today",  s)
+    s = re.sub(r"\bafternoon\b",  "3 PM",    s)
+    s = re.sub(r"\bmorning\b",    "10 AM",   s)
+    s = re.sub(r"\bevening\b",    "7 PM",    s)
+    s = re.sub(r"\bnoon\b",       "12 PM",   s)
+    s = re.sub(r"\bmidnight\b",   "11:59 PM",s)
+
+    # Remove "at" between date and time — dateparser handles "Friday 6 PM" but not "Friday at 6 PM"
+    s = re.sub(r"\bat\b", " ", s)
+
+    # Remove "next/this" prefix — dateparser handles "Friday 6 PM" but not "next Friday 6 PM"
+    s = re.sub(r"\b(next|this)\s+", "", s)
+
+    # Collapse extra whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Pass 1: cleaned phrase
+    result = dateparser.parse(s, settings=settings)
+    if result:
+        return result
+
+    # Pass 2: try the original phrase unchanged (in case cleaning hurt it)
+    return dateparser.parse(spoken, settings=settings)
+
+
+@app.post("/set-order-time")
+def set_order_time_route(body: SetOrderTimeRequest):
+    """
+    Parse a spoken time phrase (e.g. "next Friday at 6 PM", "tomorrow at noon")
+    into a resolved ISO-8601 datetime in America/New_York, validate it, and store
+    it on the cart.  The agent passes whatever the caller said — parsing happens here.
+
+    Returns human_readable confirmation the agent can repeat back to the caller.
+    Returns 422 with next_action guidance when the time cannot be parsed or is invalid.
+    """
+    TZ  = pytz.timezone("America/New_York")
+    now = datetime.now(TZ)
+
+    parsed = _parse_spoken_time(body.spoken_time)
+
+    if parsed is None:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": f"Could not understand the time '{body.spoken_time}'.",
+                "next_action": (
+                    "Say: 'I didn't catch that — what time did you have in mind? "
+                    "For example, Friday at 6 PM or tomorrow at noon.' "
+                    "Then call set_order_time again with the caller's answer."
+                ),
+            },
+        )
+
+    if parsed <= now:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "That time has already passed.",
+                "next_action": "Say: 'That time has already passed — did you mean tomorrow?' Then call set_order_time again.",
+            },
+        )
+
+    if (parsed - now).days > 7:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "Cannot schedule orders more than 7 days in advance.",
+                "next_action": "Say: 'We can schedule up to 7 days ahead — did you mean a closer date?'",
+            },
+        )
+
+    iso_time      = parsed.isoformat()
+    human_readable = parsed.strftime("%A, %B %-d at %-I:%M %p")
+
+    try:
+        result = set_order_time(body.cart_id, iso_time)
+        result["human_readable"] = human_readable
+        result["next_action"] = (
+            f"Time set to {human_readable}. "
+            f"Confirm back to the caller: 'Just to confirm — that's {human_readable}, right?' "
+            "If they say yes, proceed with get_cart_summary then confirm_order."
+        )
+        return result
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
 
 
 @app.post("/confirm-order")

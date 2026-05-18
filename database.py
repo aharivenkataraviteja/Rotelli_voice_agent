@@ -19,17 +19,22 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE_CARTS_SQL = """
 CREATE TABLE IF NOT EXISTS carts (
-    cart_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone_number     TEXT    NOT NULL,
-    order_type       TEXT    NOT NULL CHECK(order_type IN ('pickup', 'delivery')),
-    customer_name    TEXT    NOT NULL,
-    delivery_address TEXT,
-    status           TEXT    NOT NULL DEFAULT 'active'
-                              CHECK(status IN ('active', 'confirmed', 'cancelled')),
-    clover_order_id  TEXT,
-    confirmed_at     TEXT,
-    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    cart_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number       TEXT    NOT NULL,
+    order_type         TEXT    NOT NULL CHECK(order_type IN ('pickup', 'delivery')),
+    customer_name      TEXT    NOT NULL,
+    delivery_address   TEXT,
+    status             TEXT    NOT NULL DEFAULT 'active'
+                                CHECK(status IN ('active', 'confirmed', 'cancelled')),
+    clover_order_id    TEXT,
+    confirmed_at       TEXT,
+    scheduled_for      TEXT,
+    scheduled_status   TEXT    NOT NULL DEFAULT 'not_scheduled'
+                                CHECK(scheduled_status IN
+                                      ('not_scheduled','pending','released','cancelled')),
+    scheduled_timezone TEXT    NOT NULL DEFAULT 'America/New_York',
+    created_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 """
 
@@ -59,6 +64,18 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE carts ADD COLUMN clover_order_id TEXT")
     if "confirmed_at" not in cart_cols:
         conn.execute("ALTER TABLE carts ADD COLUMN confirmed_at TEXT")
+    if "scheduled_for" not in cart_cols:
+        conn.execute("ALTER TABLE carts ADD COLUMN scheduled_for TEXT")
+    if "scheduled_status" not in cart_cols:
+        conn.execute(
+            "ALTER TABLE carts ADD COLUMN scheduled_status TEXT "
+            "NOT NULL DEFAULT 'not_scheduled'"
+        )
+    if "scheduled_timezone" not in cart_cols:
+        conn.execute(
+            "ALTER TABLE carts ADD COLUMN scheduled_timezone TEXT "
+            "NOT NULL DEFAULT 'America/New_York'"
+        )
 
 
 def init_db() -> None:

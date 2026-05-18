@@ -374,6 +374,36 @@ curl -s -X POST https://api.vapi.ai/tool \
     "server": { "url": "'"$BASE_URL"'/confirm-order" }
   }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
 
+# ─────────────────────────────────────────────
+# TOOL 12 — set_order_time
+# ─────────────────────────────────────────────
+echo "12/12 — set_order_time"
+curl -s -X POST https://api.vapi.ai/tool \
+  -H "Authorization: Bearer $VAPI_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "function": {
+      "name": "set_order_time",
+      "description": "Set a future pickup or delivery time for a scheduled order. Pass the spoken time phrase exactly as the caller said it — the backend parses it. Call this after create_order_cart and before confirm_order when the caller wants to schedule for a future time.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cart_id": {
+            "type": "integer",
+            "description": "Cart ID returned from create_order_cart"
+          },
+          "spoken_time": {
+            "type": "string",
+            "description": "The time phrase as spoken by the caller, e.g. next Friday at 6 PM, tomorrow at noon, tonight at 7:30, Saturday afternoon"
+          }
+        },
+        "required": ["cart_id", "spoken_time"]
+      }
+    },
+    "server": { "url": "'"$BASE_URL"'/set-order-time" }
+  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
+
 echo ""
-echo "Done! All 11 tools registered."
+echo "Done! All 12 tools registered."
 echo "Next: Go to https://dashboard.vapi.ai and attach these tools to your assistant."
