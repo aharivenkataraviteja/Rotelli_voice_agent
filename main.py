@@ -114,6 +114,8 @@ from models import (
     CancelCartRequest,
     ConfirmOrderRequest,
     SetOrderTimeRequest,
+    ApplyCouponRequest,
+    RemoveCouponRequest,
 )
 from crud import (
     get_customer_by_phone,
@@ -128,6 +130,8 @@ from crud import (
     cancel_cart,
     confirm_order,
     set_order_time,
+    apply_coupon,
+    remove_coupon,
     get_orders,
     CartNotFoundError,
     CartNotActiveError,
@@ -503,6 +507,50 @@ def set_order_time_route(body: SetOrderTimeRequest):
             f"Confirm back to the caller: 'Just to confirm — that's {human_readable}, right?' "
             "If they say yes, proceed with get_cart_summary then confirm_order."
         )
+        return result
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+
+
+@app.post("/apply-coupon")
+def apply_coupon_route(body: ApplyCouponRequest):
+    """
+    Apply a customer coupon to an active cart.
+    coupon_type = 'percent' (e.g. 10 = 10% off food subtotal)
+    coupon_type = 'flat'    (e.g. 5  = $5 off food subtotal)
+    Returns the full updated cart summary with the new totals.
+    """
+    try:
+        result = apply_coupon(
+            cart_id=body.cart_id,
+            coupon_type=body.coupon_type,
+            coupon_value=body.coupon_value,
+            description=body.description,
+        )
+        result["next_action"] = (
+            f"Coupon applied: {body.description}. "
+            f"Discount: ${result['discount']:.2f}. "
+            f"New total: ${result['final_total']:.2f} (tax included). "
+            "Read the updated total back to the caller."
+        )
+        return result
+    except CartNotFoundError as e:
+        return JSONResponse(status_code=404, content={"detail": str(e)})
+    except CartNotActiveError as e:
+        return JSONResponse(status_code=409, content={"detail": str(e), "status": e.status})
+
+
+@app.post("/remove-coupon")
+def remove_coupon_route(body: RemoveCouponRequest):
+    """
+    Remove the coupon from an active cart and restore full pricing.
+    Returns the updated cart summary.
+    """
+    try:
+        result = remove_coupon(cart_id=body.cart_id)
+        result["next_action"] = "Coupon removed. Full price restored."
         return result
     except CartNotFoundError as e:
         return JSONResponse(status_code=404, content={"detail": str(e)})

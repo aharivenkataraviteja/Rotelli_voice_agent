@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS carts (
                                 CHECK(scheduled_status IN
                                       ('not_scheduled','pending','released','cancelled')),
     scheduled_timezone TEXT    NOT NULL DEFAULT 'America/New_York',
+    coupon_type        TEXT,                  -- 'percent' | 'flat' | NULL
+    coupon_value       REAL    NOT NULL DEFAULT 0.0,
+    coupon_description TEXT,                  -- what the caller said, e.g. "10% off"
     created_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -76,6 +79,12 @@ def _migrate(conn) -> None:
             "ALTER TABLE carts ADD COLUMN scheduled_timezone TEXT "
             "NOT NULL DEFAULT 'America/New_York'"
         )
+    if "coupon_type" not in cart_cols:
+        conn.execute("ALTER TABLE carts ADD COLUMN coupon_type TEXT")
+    if "coupon_value" not in cart_cols:
+        conn.execute("ALTER TABLE carts ADD COLUMN coupon_value REAL NOT NULL DEFAULT 0.0")
+    if "coupon_description" not in cart_cols:
+        conn.execute("ALTER TABLE carts ADD COLUMN coupon_description TEXT")
 
 
 def init_db() -> None:

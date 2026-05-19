@@ -19,24 +19,25 @@ DELIVERY_MINIMUM = float(os.environ.get("DELIVERY_MINIMUM", "20.00"))
 DELIVERY_FEE     = float(os.environ.get("DELIVERY_FEE",     "2.99"))
 TAX_RATE         = float(os.environ.get("TAX_RATE",         "0.065"))   # 6.5% Florida sales tax
 
-# Automatic discounts (delivery and pickup only, not dine-in)
-# Applies the best available discount automatically.
-DISCOUNT_TIER1_MIN    = 40.00   # 10% off food subtotal when >= $40
-DISCOUNT_TIER1_PCT    = 0.10
-DISCOUNT_TIER2_MIN    = 80.00   # $10 flat off when >= $80
-DISCOUNT_TIER2_FLAT   = 10.00
-
-
-def _calculate_discount(food_subtotal: float, order_type: str) -> float:
-    """Return the discount amount (always >= 0) for a given food subtotal."""
-    if order_type not in ("pickup", "delivery"):
+def _calculate_discount(food_subtotal: float,
+                        coupon_type: Optional[str],
+                        coupon_value: float) -> float:
+    """
+    Return the coupon discount amount (>= 0).
+    coupon_type: 'percent' → coupon_value is a percentage (e.g. 10 = 10%)
+                 'flat'    → coupon_value is a dollar amount (e.g. 5 = $5 off)
+                 None      → no coupon, return 0.0
+    The discount is capped at the food subtotal so the total never goes negative.
+    """
+    if not coupon_type or coupon_value <= 0:
         return 0.0
-    if food_subtotal >= DISCOUNT_TIER2_MIN:
-        # Apply whichever is better: flat $10 or 10%
-        return round(max(DISCOUNT_TIER2_FLAT, food_subtotal * DISCOUNT_TIER1_PCT), 2)
-    if food_subtotal >= DISCOUNT_TIER1_MIN:
-        return round(food_subtotal * DISCOUNT_TIER1_PCT, 2)
-    return 0.0
+    if coupon_type == "percent":
+        discount = round(food_subtotal * (coupon_value / 100.0), 2)
+    elif coupon_type == "flat":
+        discount = round(float(coupon_value), 2)
+    else:
+        return 0.0
+    return round(min(discount, food_subtotal), 2)  # never exceed the food total
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +307,14 @@ def get_cart_summary(cart_id: int) -> dict:
     food_subtotal = round(sum(i["line_total"] for i in items), 2)
     delivery_fee  = round(DELIVERY_FEE if cart["order_type"] == "delivery" else 0.0, 2)
 
-    # Automatic discount (10% on $40+, best of $10/$10%+ on $80+)
-    discount      = _calculate_discount(food_subtotal, cart["order_type"])
-    taxable_amt   = round(food_subtotal - discount, 2)
-    tax           = round(taxable_amt * TAX_RATE, 2)
-    final_total   = round(taxable_amt + delivery_fee + tax, 2)
+    # Coupon discount — only applied when caller has a coupon (no automatic discounts)
+    coupon_type  = cart.get("coupon_type")
+    coupon_value = cart.get("coupon_value") or 0.0
+    coupon_desc  = cart.get("coupon_description")
+    discount     = _calculate_discount(food_subtotal, coupon_type, coupon_value)
+    taxable_amt  = round(food_subtotal - discount, 2)
+    tax          = round(taxable_amt * TAX_RATE, 2)
+    final_total  = round(taxable_amt + delivery_fee + tax, 2)
 
     summary = {
         "cart_id":            cart_id,
@@ -325,6 +329,9 @@ def get_cart_summary(cart_id: int) -> dict:
         "scheduled_for":      cart["scheduled_for"],
         "scheduled_status":   cart["scheduled_status"],
         "scheduled_timezone": cart["scheduled_timezone"],
+        # Coupon fields
+        "coupon_applied":     coupon_type is not None,
+        "coupon_description": coupon_desc,
         "item_count":         len(items),
         "items":              items,
         # ── Totals ────────────────────────────────────────────────────────────
@@ -516,6 +523,76 @@ def cancel_cart(cart_id: int) -> dict:
         "status":  "cancelled",
         "cart_id": cart_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Coupon / discount
+# ---------------------------------------------------------------------------
+
+def apply_coupon(
+    cart_id:     int,
+    coupon_type:  str,   # 'percent' or 'flat'
+    coupon_value: float,
+    description:  str,
+) -> dict:
+    """
+    Apply a coupon to an active cart.
+    coupon_type  = 'percent' → coupon_value is the percentage (e.g. 10 = 10% off)
+    coupon_type  = 'flat'    → coupon_value is dollar amount (e.g. 5 = $5 off)
+    Raises CartNotFoundError or CartNotActiveError.
+    Returns the updated cart summary so the agent can read back the new total.
+    """
+    with get_conn() as conn:
+        cart = conn.execute(
+            "SELECT cart_id, status FROM carts WHERE cart_id = ?", (cart_id,)
+        ).fetchone()
+        if cart is None:
+            raise CartNotFoundError(f"Cart {cart_id} not found")
+        if cart["status"] != "active":
+            raise CartNotActiveError(cart["status"])
+
+        conn.execute(
+            """
+            UPDATE carts
+               SET coupon_type        = ?,
+                   coupon_value       = ?,
+                   coupon_description = ?,
+                   updated_at         = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE cart_id = ?
+            """,
+            (coupon_type, coupon_value, description.strip(), cart_id),
+        )
+
+    return get_cart_summary(cart_id)
+
+
+def remove_coupon(cart_id: int) -> dict:
+    """
+    Remove any coupon from an active cart (restore full price).
+    Returns the updated cart summary.
+    """
+    with get_conn() as conn:
+        cart = conn.execute(
+            "SELECT cart_id, status FROM carts WHERE cart_id = ?", (cart_id,)
+        ).fetchone()
+        if cart is None:
+            raise CartNotFoundError(f"Cart {cart_id} not found")
+        if cart["status"] != "active":
+            raise CartNotActiveError(cart["status"])
+
+        conn.execute(
+            """
+            UPDATE carts
+               SET coupon_type        = NULL,
+                   coupon_value       = 0.0,
+                   coupon_description = NULL,
+                   updated_at         = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE cart_id = ?
+            """,
+            (cart_id,),
+        )
+
+    return get_cart_summary(cart_id)
 
 
 # ---------------------------------------------------------------------------

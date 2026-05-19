@@ -404,6 +404,72 @@ curl -s -X POST https://api.vapi.ai/tool \
     "server": { "url": "'"$BASE_URL"'/set-order-time" }
   }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
 
+
+# ─────────────────────────────────────────────
+# TOOL 13 — apply_coupon
+# ─────────────────────────────────────────────
+echo "13/14 — apply_coupon"
+curl -s -X POST https://api.vapi.ai/tool \
+  -H "Authorization: Bearer $VAPI_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "function": {
+      "name": "apply_coupon",
+      "description": "Apply a customer coupon to the active cart. Call this when the caller says they have a coupon. Returns the updated cart summary with the discounted total.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cart_id": {
+            "type": "integer",
+            "description": "Cart ID to apply the coupon to"
+          },
+          "coupon_type": {
+            "type": "string",
+            "enum": ["percent", "flat"],
+            "description": "percent = percentage off (e.g. 10 means 10% off), flat = fixed dollar amount off (e.g. 5 means $5 off)"
+          },
+          "coupon_value": {
+            "type": "number",
+            "description": "The discount value — percentage number (e.g. 10 for 10%) or dollar amount (e.g. 5 for $5 off)"
+          },
+          "description": {
+            "type": "string",
+            "description": "What the coupon says, as spoken by the caller, e.g. 10 percent off any order, 5 dollars off, free delivery"
+          }
+        },
+        "required": ["cart_id", "coupon_type", "coupon_value", "description"]
+      }
+    },
+    "server": { "url": "'"$BASE_URL"'/apply-coupon" }
+  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
+
+# ─────────────────────────────────────────────
+# TOOL 14 — remove_coupon
+# ─────────────────────────────────────────────
+echo "14/14 — remove_coupon"
+curl -s -X POST https://api.vapi.ai/tool \
+  -H "Authorization: Bearer $VAPI_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "function": {
+      "name": "remove_coupon",
+      "description": "Remove the coupon from the cart and restore full pricing. Use if the caller says the coupon does not apply or wants to cancel it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cart_id": {
+            "type": "integer",
+            "description": "Cart ID to remove the coupon from"
+          }
+        },
+        "required": ["cart_id"]
+      }
+    },
+    "server": { "url": "'"$BASE_URL"'/remove-coupon" }
+  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
+
 echo ""
-echo "Done! All 12 tools registered."
+echo "Done! All 14 tools registered."
 echo "Next: Go to https://dashboard.vapi.ai and attach these tools to your assistant."

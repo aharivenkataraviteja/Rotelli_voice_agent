@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 import re
 
 from pydantic import BaseModel, FieldValidationInfo, field_validator, model_validator
@@ -188,6 +188,35 @@ class CancelCartRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ConfirmOrderRequest(BaseModel):
+    cart_id: int
+
+
+# ---------------------------------------------------------------------------
+# /apply-coupon
+# ---------------------------------------------------------------------------
+
+class ApplyCouponRequest(BaseModel):
+    cart_id:      int
+    coupon_type:  Literal["percent", "flat"]
+    coupon_value: float   # percentage (e.g. 10 = 10%) or dollar amount (e.g. 5 = $5)
+    description:  str     # what the caller said, e.g. "10% off any order"
+
+    @field_validator("coupon_value")
+    @classmethod
+    def positive_value(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("coupon_value must be greater than 0")
+        return round(v, 2)
+
+    @field_validator("description")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("description cannot be blank")
+        return v.strip()
+
+
+class RemoveCouponRequest(BaseModel):
     cart_id: int
 
 
