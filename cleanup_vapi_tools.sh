@@ -2,7 +2,7 @@
 
 VAPI_KEY="${VAPI_KEY:-your-vapi-api-key-here}"
 
-# The 12 active tool IDs — keep these, delete everything else
+# The 14 active tool IDs — keep these, delete everything else
 KEEP=(
   "f81a56ec-33f1-49c9-9267-d13ced896764"
   "fa3dca36-22d7-48f8-a774-0074b848b5b6"
@@ -16,6 +16,8 @@ KEEP=(
   "30de2359-e5a7-4c06-b932-35a70df70876"
   "65c19140-9019-4b5d-bba5-2cf67cfd0ec3"
   "72f56b1c-519f-4860-9b9a-d7f4d10ade38"
+  "50726d97-698f-4c50-815b-3982d56b3e6e"
+  "ede099c8-64ca-4d7d-85bb-2db53118c33b"
 )
 
 echo "Fetching all tools from Vapi..."
