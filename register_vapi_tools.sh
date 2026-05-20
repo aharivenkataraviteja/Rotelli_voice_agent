@@ -3,14 +3,14 @@
 VAPI_KEY="${VAPI_KEY:-your-vapi-api-key-here}"
 BASE_URL="${BASE_URL:-https://your-ngrok-url.ngrok-free.dev}"
 
-echo "Registering all 11 Vapi tools..."
+echo "Registering all 14 Vapi tools..."
 echo "Base URL: $BASE_URL"
 echo ""
 
 # ─────────────────────────────────────────────
 # TOOL 1 — lookup_customer_by_phone
 # ─────────────────────────────────────────────
-echo "1/11 — lookup_customer_by_phone"
+echo "1/14 — lookup_customer_by_phone"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -36,7 +36,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 2 — save_or_update_customer
 # ─────────────────────────────────────────────
-echo "2/11 — save_or_update_customer"
+echo "2/14 — save_or_update_customer"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -76,35 +76,9 @@ curl -s -X POST https://api.vapi.ai/tool \
   }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
 
 # ─────────────────────────────────────────────
-# TOOL 3 — check_delivery_eligibility
+# TOOL 3 — create_order_cart
 # ─────────────────────────────────────────────
-echo "3/11 — check_delivery_eligibility"
-curl -s -X POST https://api.vapi.ai/tool \
-  -H "Authorization: Bearer $VAPI_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "function",
-    "function": {
-      "name": "check_delivery_eligibility",
-      "description": "Check if a delivery address is within the restaurant delivery radius. Always call this before creating a delivery cart.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "address": {
-            "type": "string",
-            "description": "Full delivery address provided by the caller, e.g. 123 Main St, Boca Raton FL"
-          }
-        },
-        "required": ["address"]
-      }
-    },
-    "server": { "url": "'"$BASE_URL"'/check-delivery-eligibility" }
-  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
-
-# ─────────────────────────────────────────────
-# TOOL 4 — create_order_cart
-# ─────────────────────────────────────────────
-echo "4/11 — create_order_cart"
+echo "3/14 — create_order_cart"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -143,7 +117,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 5 — add_item_to_cart
 # ─────────────────────────────────────────────
-echo "5/11 — add_item_to_cart"
+echo "4/14 — add_item_to_cart"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -195,7 +169,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 6 — get_cart_summary
 # ─────────────────────────────────────────────
-echo "6/11 — get_cart_summary"
+echo "5/14 — get_cart_summary"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -221,7 +195,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 7 — update_cart_item
 # ─────────────────────────────────────────────
-echo "7/11 — update_cart_item"
+echo "6/14 — update_cart_item"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -269,7 +243,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 8 — remove_cart_item
 # ─────────────────────────────────────────────
-echo "8/11 — remove_cart_item"
+echo "7/14 — remove_cart_item"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -299,7 +273,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 9 — clear_cart
 # ─────────────────────────────────────────────
-echo "9/11 — clear_cart"
+echo "8/14 — clear_cart"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -325,7 +299,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 10 — cancel_cart
 # ─────────────────────────────────────────────
-echo "10/11 — cancel_cart"
+echo "9/14 — cancel_cart"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -351,7 +325,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 11 — confirm_order
 # ─────────────────────────────────────────────
-echo "11/11 — confirm_order"
+echo "10/14 — confirm_order"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -377,7 +351,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 12 — set_order_time
 # ─────────────────────────────────────────────
-echo "12/12 — set_order_time"
+echo "11/14 — set_order_time"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -408,7 +382,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 13 — apply_coupon
 # ─────────────────────────────────────────────
-echo "13/14 — apply_coupon"
+echo "12/14 — apply_coupon"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -447,7 +421,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 14 — remove_coupon
 # ─────────────────────────────────────────────
-echo "14/14 — remove_coupon"
+echo "13/14 — remove_coupon"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -474,7 +448,7 @@ curl -s -X POST https://api.vapi.ai/tool \
 # ─────────────────────────────────────────────
 # TOOL 15 — check_store_status
 # ─────────────────────────────────────────────
-echo "15/15 — check_store_status"
+echo "14/14 — check_store_status"
 curl -s -X POST https://api.vapi.ai/tool \
   -H "Authorization: Bearer $VAPI_KEY" \
   -H "Content-Type: application/json" \
@@ -493,5 +467,5 @@ curl -s -X POST https://api.vapi.ai/tool \
   }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
 
 echo ""
-echo "Done! All 15 tools registered."
+echo "Done! All 14 tools registered."
 echo "Next: Go to https://dashboard.vapi.ai and attach these tools to your assistant."
