@@ -66,7 +66,11 @@ def create_clover_order(cart: dict) -> Optional[str]:
         f"Order type: {cart['order_type'].upper()}",
     ]
     if cart.get("delivery_address"):
-        note_lines.append(f"Deliver to: {cart['delivery_address']}")
+        # Use the raw spoken address for the driver (exactly what the caller said)
+        addr = cart.get("raw_delivery_address") or cart["delivery_address"]
+        note_lines.append(f"Deliver to: {addr}")
+        if cart.get("address_confidence") == "low":
+            note_lines.append("⚠ Address not fully verified — confirm with customer")
 
     order_payload = {
         "title": f"{cart['order_type'].capitalize()} — {cart['customer_name']}",

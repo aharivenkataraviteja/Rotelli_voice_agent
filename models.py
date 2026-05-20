@@ -63,10 +63,12 @@ class DeliveryEligibilityRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class CreateCartRequest(BaseModel):
-    phone_number:     str
-    order_type:       str                  # "pickup" or "delivery"
-    customer_name:    str
-    delivery_address: Optional[str] = None  # required when order_type == "delivery"
+    phone_number:          str
+    order_type:            str                  # "pickup" or "delivery"
+    customer_name:         str
+    delivery_address:      Optional[str] = None  # normalized address (from check_delivery_eligibility)
+    raw_delivery_address:  Optional[str] = None  # exactly what caller said — printed on receipt
+    address_confidence:    Optional[str] = "high"  # 'high' | 'low'
 
     @field_validator("phone_number")
     @classmethod

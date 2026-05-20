@@ -33,11 +33,13 @@ CREATE TABLE IF NOT EXISTS carts (
                                 CHECK(scheduled_status IN
                                       ('not_scheduled','pending','released','cancelled')),
     scheduled_timezone TEXT    NOT NULL DEFAULT 'America/New_York',
-    coupon_type        TEXT,                  -- 'percent' | 'flat' | NULL
-    coupon_value       REAL    NOT NULL DEFAULT 0.0,
-    coupon_description TEXT,                  -- what the caller said, e.g. "10% off"
-    created_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    coupon_type            TEXT,                  -- 'percent' | 'flat' | NULL
+    coupon_value           REAL    NOT NULL DEFAULT 0.0,
+    coupon_description     TEXT,                  -- what the caller said, e.g. "10% off"
+    raw_delivery_address   TEXT,                  -- exactly what the caller said
+    address_confidence     TEXT    NOT NULL DEFAULT 'high',  -- 'high' | 'low'
+    created_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 """
 
@@ -85,6 +87,13 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE carts ADD COLUMN coupon_value REAL NOT NULL DEFAULT 0.0")
     if "coupon_description" not in cart_cols:
         conn.execute("ALTER TABLE carts ADD COLUMN coupon_description TEXT")
+    if "raw_delivery_address" not in cart_cols:
+        conn.execute("ALTER TABLE carts ADD COLUMN raw_delivery_address TEXT")
+    if "address_confidence" not in cart_cols:
+        conn.execute(
+            "ALTER TABLE carts ADD COLUMN address_confidence TEXT "
+            "NOT NULL DEFAULT 'high'"
+        )
 
 
 def init_db() -> None:

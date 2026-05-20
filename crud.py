@@ -198,19 +198,26 @@ def upsert_customer(
 # ---------------------------------------------------------------------------
 
 def create_cart(
-    phone_number: str,
-    order_type: str,
-    customer_name: str,
-    delivery_address: Optional[str] = None,
+    phone_number:         str,
+    order_type:           str,
+    customer_name:        str,
+    delivery_address:     Optional[str] = None,  # normalized (for display)
+    raw_delivery_address: Optional[str] = None,  # raw spoken (for driver / receipt)
+    address_confidence:   str = "high",
 ) -> dict:
     """Insert a new active cart and return it."""
+    # If caller didn't supply raw address, fall back to normalized
+    raw = raw_delivery_address or delivery_address
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO carts (phone_number, order_type, customer_name, delivery_address)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO carts
+              (phone_number, order_type, customer_name,
+               delivery_address, raw_delivery_address, address_confidence)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (phone_number, order_type, customer_name, delivery_address),
+            (phone_number, order_type, customer_name,
+             delivery_address, raw, address_confidence),
         )
         row = conn.execute(
             "SELECT * FROM carts WHERE cart_id = last_insert_rowid()"
@@ -321,17 +328,19 @@ def get_cart_summary(cart_id: int) -> dict:
         "phone_number":       cart["phone_number"],
         "order_type":         cart["order_type"],
         "customer_name":      cart["customer_name"],
-        "delivery_address":   cart["delivery_address"],
-        "status":             cart["status"],
-        "clover_order_id":    cart["clover_order_id"],
-        "confirmed_at":       cart["confirmed_at"],
+        "delivery_address":      cart["delivery_address"],
+        "raw_delivery_address":  cart.get("raw_delivery_address") or cart["delivery_address"],
+        "address_confidence":    cart.get("address_confidence", "high"),
+        "status":                cart["status"],
+        "clover_order_id":       cart["clover_order_id"],
+        "confirmed_at":          cart["confirmed_at"],
         # Scheduled order fields
-        "scheduled_for":      cart["scheduled_for"],
-        "scheduled_status":   cart["scheduled_status"],
-        "scheduled_timezone": cart["scheduled_timezone"],
+        "scheduled_for":         cart["scheduled_for"],
+        "scheduled_status":      cart["scheduled_status"],
+        "scheduled_timezone":    cart["scheduled_timezone"],
         # Coupon fields
-        "coupon_applied":     coupon_type is not None,
-        "coupon_description": coupon_desc,
+        "coupon_applied":        coupon_type is not None,
+        "coupon_description":    coupon_desc,
         "item_count":         len(items),
         "items":              items,
         # ── Totals ────────────────────────────────────────────────────────────

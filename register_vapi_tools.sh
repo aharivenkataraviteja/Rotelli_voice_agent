@@ -470,6 +470,28 @@ curl -s -X POST https://api.vapi.ai/tool \
     "server": { "url": "'"$BASE_URL"'/remove-coupon" }
   }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
 
+
+# ─────────────────────────────────────────────
+# TOOL 15 — check_store_status
+# ─────────────────────────────────────────────
+echo "15/15 — check_store_status"
+curl -s -X POST https://api.vapi.ai/tool \
+  -H "Authorization: Bearer $VAPI_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "function": {
+      "name": "check_store_status",
+      "description": "Check whether the restaurant is currently open. Call this at the very start of every new order conversation before doing anything else. Returns is_open, current time, opening/closing times, and a suggested message if closed.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    "server": { "url": "'"$BASE_URL"'/check-store-status" }
+  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print('  OK — id:', r.get('id','ERROR'), r.get('message',''))"
+
 echo ""
-echo "Done! All 14 tools registered."
+echo "Done! All 15 tools registered."
 echo "Next: Go to https://dashboard.vapi.ai and attach these tools to your assistant."

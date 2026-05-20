@@ -139,6 +139,7 @@ from crud import (
 )
 from geocoding import check_eligibility
 from scheduler import scheduler_loop
+from store_hours import check_store_status
 
 log = logging.getLogger(__name__)
 
@@ -251,30 +252,63 @@ def save_or_update_customer(body: SaveOrUpdateCustomerRequest):
 def check_delivery_eligibility(body: DeliveryEligibilityRequest):
     """
     Check whether an address is within the delivery radius.
-    Always returns 200 — eligible:true/false is the branch, not an error.
+    Always returns 200 — eligible:true/false is the decision, not an HTTP error.
+
+    address_confidence values:
+      "high" — geocoded successfully, distance is accurate
+      "low"  — could not geocode but address looks local; delivery allowed,
+               driver will confirm on arrival
+
+    Only returns eligible:false when:
+      - address clearly names an out-of-area city (Miami, Fort Lauderdale, etc.)
+      - geocoded distance exceeds DELIVERY_RADIUS_MILES
     """
     try:
-        return check_eligibility(body.address)
-    except ValueError as e:
-        # Address could not be geocoded — guide the agent to ask for more detail
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": str(e),
-                "next_action": (
-                    "ADDRESS NOT FOUND — the geocoder could not locate that address. "
-                    "Say: 'I wasn't able to find that address — can you give me the full address including the street number and city?' "
-                    "Wait for the caller to repeat it, then call check_delivery_eligibility again with the corrected address. "
-                    "Do NOT transfer unless it fails twice in a row."
-                ),
-            },
-        )
+        result = check_eligibility(body.address)
+        # Add agent guidance based on confidence
+        if result.get("address_confidence") == "low":
+            result["next_action"] = (
+                f"Address accepted with low confidence. "
+                f"Confirm back to the caller: "
+                f"'Got it — {result['raw_address']}, correct?' "
+                f"If they confirm, use raw_address as delivery_address in create_order_cart."
+            )
+        elif not result["eligible"]:
+            result["next_action"] = (
+                "Address is outside our delivery area. "
+                "Say: 'Sorry, that address is outside our delivery area. "
+                "I can set you up for pickup instead — would that work?'"
+            )
+        return result
     except RuntimeError as e:
-        # Upstream API failure — don't crash the call
-        return JSONResponse(
-            status_code=503,
-            content={"detail": f"Eligibility check unavailable: {e}"},
-        )
+        # Upstream API failure — soft pass rather than killing the call
+        enriched = body.address if any(
+            m in body.address.lower() for m in ("fl", "florida", "delray", "boca", "boynton")
+        ) else f"{body.address}, Delray Beach, FL"
+        return {
+            "eligible":             True,
+            "raw_address":          body.address,
+            "normalized_address":   enriched,
+            "address_confidence":   "low",
+            "distance_miles":       None,
+            "estimated_drive_time": None,
+            "reason":               None,
+            "note":                 f"Geocoding service unavailable ({e}). Accepted for local delivery.",
+            "next_action": (
+                f"Geocoding unavailable — accepting address. "
+                f"Confirm: 'Got it — {body.address}, correct?'"
+            ),
+        }
+
+
+@app.post("/check-store-status")
+def store_status():
+    """
+    Return the restaurant's current open/closed state based on EST business hours.
+    The agent MUST call this at the start of every new order conversation.
+    Never decide open/closed from memory.
+    """
+    return check_store_status()
 
 
 @app.post("/create-order-cart")
@@ -284,10 +318,12 @@ def create_order_cart(body: CreateCartRequest):
     Must be called before any items can be added.
     """
     cart = create_cart(
-        phone_number     = body.phone_number,
-        order_type       = body.order_type,
-        customer_name    = body.customer_name,
-        delivery_address = body.delivery_address,
+        phone_number          = body.phone_number,
+        order_type            = body.order_type,
+        customer_name         = body.customer_name,
+        delivery_address      = body.delivery_address,
+        raw_delivery_address  = body.raw_delivery_address,
+        address_confidence    = body.address_confidence or "high",
     )
     return cart
 

@@ -37,7 +37,7 @@ RESTAURANT_ADDRESS    = os.environ.get("RESTAURANT_ADDRESS",
                                        "Rotelli Pizza & Pasta, Delray Beach, FL 33446")
 RESTAURANT_LAT        = float(os.environ.get("RESTAURANT_LAT", "26.3887"))
 RESTAURANT_LNG        = float(os.environ.get("RESTAURANT_LNG", "-80.1450"))
-DELIVERY_RADIUS_MILES = float(os.environ.get("DELIVERY_RADIUS_MILES", "6.0"))
+DELIVERY_RADIUS_MILES = float(os.environ.get("DELIVERY_RADIUS_MILES", "10.0"))
 
 # South Florida Nominatim viewbox — covers Boca Raton / Delray Beach / Boynton area
 # Format: west,north,east,south
@@ -118,7 +118,9 @@ def _google_mode(address: str) -> dict:
 
     return {
         "eligible":             eligible,
+        "raw_address":          address,
         "normalized_address":   normalized,
+        "address_confidence":   "high",
         "distance_miles":       distance_miles,
         "estimated_drive_time": drive_time,
         "reason":               None if eligible else "outside_delivery_area",
@@ -128,6 +130,22 @@ def _google_mode(address: str) -> dict:
 # ---------------------------------------------------------------------------
 # Mode B — OpenStreetMap Nominatim + OSRM (no API key required)
 # ---------------------------------------------------------------------------
+
+# If geocoding returns a point more than this far from the restaurant,
+# the geocoder found the wrong place — treat it as a soft pass.
+_MAX_PLAUSIBLE_MILES = 50.0
+
+# Common first-name patterns prepended to addresses by callers/staff
+# e.g. "Ralph 13623 Via Aurora A" → "13623 Via Aurora A"
+_NAME_PREFIX_RE = re.compile(
+    r"^[A-Z][a-z]{1,14}\s+(?=\d)",   # single capitalized word before a house number
+)
+
+
+def _strip_name_prefix(address: str) -> str:
+    """Remove a leading person name before a street number, if present."""
+    return _NAME_PREFIX_RE.sub("", address)
+
 
 def _inject_local_context(address: str) -> str:
     """
@@ -141,69 +159,116 @@ def _inject_local_context(address: str) -> str:
     return f"{address}, Delray Beach, FL"
 
 
+# Cities / keywords that are clearly outside the delivery area.
+# If the spoken address contains one of these, it's a hard fail.
+_OUT_OF_AREA_MARKERS = (
+    "miami", "fort lauderdale", "hollywood", "miramar", "pembroke pines",
+    "plantation", "davie", "sunrise", "weston", "cooper city", "hallandale",
+    "dania", "hialeah", "homestead", "kendall", "aventura", "bal harbour",
+    "orlando", "tampa", "jacksonville", "naples", "sarasota", "gainesville",
+    "tallahassee", "clearwater", "st. pete", "st pete", "saint pete",
+    "west palm beach", "palm beach gardens", "jupiter", "tequesta",
+    "stuart", "port st lucie", "port saint lucie", "vero beach",
+    "fort pierce", "okeechobee",
+)
+
+
+def _is_clearly_out_of_area(address: str) -> bool:
+    """Return True only when the address unambiguously names a city outside the
+    delivery zone.  Partial or ambiguous addresses return False so we give the
+    benefit of the doubt."""
+    lower = address.lower()
+    return any(marker in lower for marker in _OUT_OF_AREA_MARKERS)
+
+
 def _nominatim_mode(address: str) -> dict:
     """
     Free mode — real driving routes via OSRM (no API key required).
 
-    Step 1: Geocode the customer address with Nominatim (OpenStreetMap).
-            Four-pass progressive strategy if the address fails:
-              Pass 1 — add local context (city/state) if missing, query as-is
-              Pass 2 — original address as supplied by the caller
-              Pass 3 — drop leading house number from the context-augmented form
-              Pass 4 — city + state only (last two comma-parts)
-    Step 2: Get real driving distance + duration from OSRM routing engine.
-            Falls back to Haversine × 1.3 only if OSRM is unreachable.
+    Validation philosophy (local pizza restaurant rules):
+      HARD FAIL  — address clearly names a city outside our delivery area
+      SOFT PASS  — geocoding fails but address looks local; trust the driver
+      FULL CHECK — geocoding succeeds; use actual distance
+
+    This means a partial address like "399 Piedmont" will SOFT PASS rather
+    than forcing the caller to spell out a USPS-perfect address.
     """
-    enriched = _inject_local_context(address)
+    # ── Hard fail: caller explicitly named a city we don't serve ──────────────
+    if _is_clearly_out_of_area(address):
+        return {
+            "eligible":           False,
+            "raw_address":        address,
+            "normalized_address": address,
+            "address_confidence": "high",
+            "distance_miles":     None,
+            "estimated_drive_time": None,
+            "reason":             "outside_delivery_area",
+        }
 
-    # Pass 1 — enriched address (local context injected if needed)
+    # Strip leading person-name prefix before geocoding (e.g. "Ralph 13623 Via Aurora A")
+    clean = _strip_name_prefix(address)
+    enriched = _inject_local_context(clean)
+
+    # Four-pass geocoding strategy
     result = _nominatim_geocode(enriched)
-
-    # Pass 2 — original address as spoken (in case it already had good context)
-    if result is None and enriched != address:
-        result = _nominatim_geocode(address)
-
-    # Pass 3 — drop leading house number from enriched form
+    if result is None and enriched != clean:
+        result = _nominatim_geocode(clean)
+    if result is None and clean != address:
+        result = _nominatim_geocode(_inject_local_context(address))
     if result is None:
         no_num = re.sub(r"^\d+\s+", "", enriched)
         if no_num != enriched:
             result = _nominatim_geocode(no_num)
-
-    # Pass 4 — city + state/zip only (last two comma-parts of enriched form)
     if result is None:
         parts = [p.strip() for p in enriched.split(",")]
         if len(parts) >= 2:
-            city_state = ", ".join(parts[-2:])
-            result = _nominatim_geocode(city_state)
+            result = _nominatim_geocode(", ".join(parts[-2:]))
 
+    # Sanity check — if geocoder found something more than 50 miles away it's
+    # probably the wrong "Waterford" or "Springfield".  Treat as soft pass.
+    if result is not None:
+        sanity_dist = _haversine_miles(RESTAURANT_LAT, RESTAURANT_LNG, result[0], result[1])
+        if sanity_dist > _MAX_PLAUSIBLE_MILES:
+            result = None   # discard bogus geocode → fall through to soft pass
+
+    # ── Soft pass: geocoding failed but address doesn't look out-of-area ──────
     if result is None:
-        raise ValueError(f"Could not geocode address: '{address}'")
+        return {
+            "eligible":             True,
+            "raw_address":          address,
+            "normalized_address":   enriched,   # enriched = address + ", Delray Beach, FL"
+            "address_confidence":   "low",
+            "distance_miles":       None,
+            "estimated_drive_time": None,
+            "reason":               None,
+            "note": (
+                "Address could not be geocoded but appears local. "
+                "Accepting for delivery — driver will confirm on arrival."
+            ),
+        }
 
     cust_lat, cust_lng = result
 
-    # Try OSRM for real driving distance first
+    # ── Full distance check via OSRM / Haversine ──────────────────────────────
     osrm_result = _osrm_route(RESTAURANT_LNG, RESTAURANT_LAT, cust_lng, cust_lat)
-
     if osrm_result:
         distance_miles = osrm_result["distance_miles"]
         drive_time     = osrm_result["drive_time"]
     else:
-        # Fallback: Haversine straight-line × 1.3 road factor
         straight_miles = _haversine_miles(RESTAURANT_LAT, RESTAURANT_LNG, cust_lat, cust_lng)
         road_miles     = straight_miles * 1.3
         drive_time_min = max(1, round(road_miles / 25 * 60))
         drive_time     = f"~{drive_time_min} mins"
         distance_miles = round(road_miles, 1)
 
-    eligible = distance_miles <= DELIVERY_RADIUS_MILES
-
-    # Use the enriched address as normalized_address so the agent can confirm
-    # the full address back to the caller (including city/state)
+    eligible   = distance_miles <= DELIVERY_RADIUS_MILES
     normalized = enriched if enriched != address else address
 
     return {
         "eligible":             eligible,
+        "raw_address":          address,
         "normalized_address":   normalized,
+        "address_confidence":   "high",
         "distance_miles":       distance_miles,
         "estimated_drive_time": drive_time,
         "reason":               None if eligible else "outside_delivery_area",
@@ -269,9 +334,12 @@ def _nominatim_geocode(query: str):
 
     try:
         resp = requests.get(url, headers=headers, timeout=6)
+        # 429 = rate-limited; treat as "no result" so caller falls through to soft-pass
+        if resp.status_code == 429:
+            return None
         resp.raise_for_status()
     except requests.Timeout:
-        raise RuntimeError("Nominatim geocoding request timed out")
+        return None   # timeout → soft-pass, don't block the order
     except requests.RequestException as e:
         raise RuntimeError(f"Nominatim request failed: {e}")
 
